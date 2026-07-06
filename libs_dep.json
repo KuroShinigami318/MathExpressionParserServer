@@ -1,0 +1,15 @@
+{
+"_comment": "@name: folder name | @prj_name: git/cmake project name | @tag: git tag/branch",
+"libs": [
+ {
+    "name": "common",
+    "prj_name": "CommonLib",
+    "tag": "v26.0.1.20"
+ },
+ {
+    "name": "asio",
+    "prj_name": "asio",
+    "tag": "v1.36.0"
+ }
+]
+}
