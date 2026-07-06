@@ -200,6 +200,7 @@ struct MathExpressionData
 {
    ActionData& actionDataRef;
    std::atomic_bool isValid{ true };
+   std::atomic_bool isCancelled{ false };
    std::list<long long> numsStack;
    std::list<OperatorType> operatorsStack;
    std::string mathExpression;
@@ -232,12 +233,13 @@ ActionResultTypeFwd MathExpressionParserAction::ProcessRawData(ISession& i_sessi
    }
 
    auto& sessionData = m_sessionDataMap[&i_session];
-   if (sessionData == nullptr)
+   if (sessionData.data == nullptr)
    {
-      sessionData = std::make_unique<ActionData>();
+      sessionData.data = std::make_unique<ActionData>();
+      sessionData.pendingProcessing++;
    }
 
-   auto& actionData = static_cast<ActionData&>(*sessionData);
+   auto& actionData = static_cast<ActionData&>(*sessionData.data);
    size_t lastCharIndex = i_size - 1;
    while (lastCharIndex > 0 && IsWhitespace(i_data[lastCharIndex]))
    {
@@ -265,12 +267,41 @@ ActionResultTypeFwd MathExpressionParserAction::ProcessRawData(ISession& i_sessi
    return utils::Ok();
 }
 
+ActionResultTypeFwd MathExpressionParserAction::UnregisterSession(ISession& i_session)
+{
+   if (auto foundIt = m_sessionDataMap.find(&i_session); foundIt != m_sessionDataMap.end())
+   {
+      if (foundIt->second.data)
+      {
+         ActionData& actionData = static_cast<ActionData&>(*foundIt->second.data);
+         for (MathExpressionData& mathExpressionData : actionData.mathExpressionDataList)
+         {
+            mathExpressionData.waitable.Cancel();
+            mathExpressionData.waitable.Wait();
+         }
+      }
+      else if (foundIt->second.pendingProcessing > 0)
+      {
+         m_staleSession.emplace(&i_session);
+      }
+   }
+
+   return ActionEP::UnregisterSession(i_session);
+}
+
 void MathExpressionParserAction::PostExpressionToPool(ISession& i_session, ActionData& i_actionData, std::string& o_expression, std::string::iterator i_begin, std::string::iterator i_end)
 {
    i_actionData.pendingProcessingCount.fetch_add(1, std::memory_order_relaxed);
    MathExpressionData& mathExpressionData = i_actionData.mathExpressionDataList.emplace_back(i_actionData);
    mathExpressionData.mathExpression.assign(i_begin, i_end);
-   mathExpressionData.waitable = utils::async(m_workerThreadPool, &MathExpressionParserAction::ParseMathExpression, this, i_session, &mathExpressionData);
+   mathExpressionData.waitable = utils::async(utils::CallableBound<utils::MessageHandleStatus()>
+   {
+      [&mathExpressionData]() -> utils::MessageHandleStatus
+      {
+         mathExpressionData.isCancelled.store(true, std::memory_order_relaxed);
+         return utils::MessageHandleStatus::SUCCESS;
+      }
+   }, m_workerThreadPool, &MathExpressionParserAction::ParseMathExpression, this, i_session, &mathExpressionData);
    o_expression.erase(i_begin, i_end);
 }
 
@@ -278,9 +309,13 @@ void MathExpressionParserAction::ParseMathExpression(ISession& i_session, MathEx
 {
    utils::Epilogue cleanup([this, &i_session, i_mathExpressionData]()
    {
+      if (i_mathExpressionData->isCancelled.load(std::memory_order_relaxed) == true)
+      {
+         return;
+      }
       if (i_mathExpressionData->actionDataRef.pendingProcessingCount.fetch_sub(1, std::memory_order_seq_cst) == 1)
       {
-         FinalizeParseMathExpression(i_session, std::move(m_sessionDataMap[&i_session]));
+         FinalizeParseMathExpression(i_session, std::move(m_sessionDataMap[&i_session].data));
       }
    });
    const std::string& mathExpression = i_mathExpressionData->mathExpression;
@@ -289,6 +324,11 @@ void MathExpressionParserAction::ParseMathExpression(ISession& i_session, MathEx
    OperatorType _operator;
    for (size_t index = 0; index < mathExpression.size(); index++)
    {
+      if (i_mathExpressionData->isCancelled.load(std::memory_order_relaxed) == true)
+      {
+         return;
+      }
+
       if (IsWhitespace(mathExpression[index]))
       {
          continue;

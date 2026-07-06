@@ -29,3 +29,18 @@ ActionResultTypeFwd ActionEP::UnregisterSession(ISession& i_session)
 
    return utils::Ok();
 }
+
+void ActionEP::FinishAction(ISession& i_session, const std::string& i_result)
+{
+   if (m_staleSession.find(&i_session) != m_staleSession.end())
+   {
+      m_staleSession.erase(&i_session);
+      return;
+   }
+   utils::Access<SignalKey>(sig_onActionCompleted).Emit(i_session, i_result);
+   size_t& pendingProcessing = m_sessionDataMap.at(&i_session).pendingProcessing;
+   if (pendingProcessing > 0)
+   {
+      --pendingProcessing;
+   }
+}
