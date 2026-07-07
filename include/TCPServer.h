@@ -12,6 +12,9 @@ public:
    utils::unique_ref<ISession> CreateSession(asio::ip::tcp::socket&& i_socket) override;
 
 private:
+   void AsyncListen();
+
+private:
    asio::ip::tcp::acceptor m_acceptor;
    asio::ip::tcp::socket m_remoteSocket;
 };

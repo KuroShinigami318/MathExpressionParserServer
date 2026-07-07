@@ -13,7 +13,7 @@ ActionResultTypeFwd ActionEP::RegisterSession(ISession& i_session)
       return make_error<ActionErrorTypeFwd>(Constants::ActionErrorCode::SessionAlreadyRegistered, "Session is already registered.");
    }
 
-   m_sessionDataMap.try_emplace(&i_session, nullptr);
+   m_sessionDataMap.try_emplace(&i_session);
 
    return utils::Ok();
 }

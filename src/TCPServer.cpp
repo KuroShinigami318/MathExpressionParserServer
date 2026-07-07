@@ -16,6 +16,17 @@ TCPServer::TCPServer(const ServerConfig& i_config)
 
 void TCPServer::Start()
 {
+   ServerEP::Start();
+   AsyncListen();
+}
+
+utils::unique_ref<ISession> TCPServer::CreateSession(asio::ip::tcp::socket&& i_socket)
+{
+   return utils::make_unique<TCPSession>(std::move(i_socket));
+}
+
+void TCPServer::AsyncListen()
+{
    m_acceptor.async_accept(m_remoteSocket, [this](std::error_code ec)
    {
       if (!ec)
@@ -26,11 +37,6 @@ void TCPServer::Start()
       {
          std::cerr << "Error accepting connection: " << ec.message() << std::endl;
       }
-      Start();
+      AsyncListen();
    });
-}
-
-utils::unique_ref<ISession> TCPServer::CreateSession(asio::ip::tcp::socket&& i_socket)
-{
-   return utils::make_unique<TCPSession>(std::move(i_socket));
 }

@@ -6,6 +6,17 @@
 #include "MacrosUtils.h"
 
 template <typename Protocol>
+void ServerEP<Protocol>::Start()
+{
+   auto actionIter = m_actions.find(Constants::ActionTypes::ParseMathExpression);
+   ASSERT_PLAIN_MSG(actionIter != m_actions.end(), "Action not found for {}", Constants::ActionTypes::ParseMathExpression);
+   if (actionIter != m_actions.end())
+   {
+      m_connections.emplace_back(actionIter->second->sig_onActionCompleted.Connect(&ServerEP<Protocol>::OnActionFinished, this, Constants::ActionTypes::ParseMathExpression));
+   }
+}
+
+template <typename Protocol>
 bool ServerEP<Protocol>::AcceptSocket(asio::basic_stream_socket<Protocol>&& i_socket)
 {
    if (m_sessions.find(i_socket.remote_endpoint()) != m_sessions.end())
@@ -28,7 +39,6 @@ bool ServerEP<Protocol>::AcceptSocket(asio::basic_stream_socket<Protocol>&& i_so
    if (actionIter != m_actions.end())
    {
       actionIter->second->RegisterSession(*iter->second.session).assertSuccess();
-      iter->second.connections.emplace_back(actionIter->second->sig_onActionCompleted.Connect(&ServerEP<Protocol>::OnActionFinished, this, Constants::ActionTypes::ParseMathExpression));
    }
 
    iter->second.session->Start();

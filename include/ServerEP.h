@@ -28,6 +28,7 @@ protected:
    };
 
 public:
+   void Start() override;
    virtual utils::unique_ref<ISession> CreateSession(asio::basic_stream_socket<Protocol, asio::any_io_executor>&& i_socket) = 0;
    bool AcceptSocket(asio::basic_stream_socket<Protocol, asio::any_io_executor>&& i_socket);
 
@@ -40,4 +41,5 @@ protected:
 protected:
    std::unordered_map<asio::ip::basic_endpoint<Protocol>, SessionHolder> m_sessions;
    std::unordered_map<Constants::ActionTypes, utils::unique_ref<IAction>> m_actions;
+   std::vector<utils::Connection> m_connections;
 };

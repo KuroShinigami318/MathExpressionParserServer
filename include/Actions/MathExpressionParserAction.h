@@ -7,6 +7,8 @@ struct MathExpressionData;
 struct ActionData;
 }
 
+using FinalizingActionDataList = std::list<utils::unique_ref<IData>>;
+
 class MathExpressionParserAction : public ActionEP
 {
 public:
@@ -17,8 +19,10 @@ public:
 private:
    void PostExpressionToPool(ISession& i_session, math_expression_parser::ActionData& i_actionData, std::string& o_expression, std::string::iterator i_begin, std::string::iterator i_end);
    void ParseMathExpression(ISession& i_session, math_expression_parser::MathExpressionData* i_mathExpressionData);
-   void FinalizeParseMathExpression(ISession& i_session, utils::unique_ref<IData> i_actionData);
+   void FinalizeParseMathExpression(ISession& i_session, math_expression_parser::ActionData& i_actionData);
+   void SubmitFinalizedActionData(ISession& i_session, math_expression_parser::ActionData& i_actionData, std::string i_result);
 
 private:
    utils::message_threadpool m_workerThreadPool;
+   FinalizingActionDataList m_finalizingActionDataList;
 };

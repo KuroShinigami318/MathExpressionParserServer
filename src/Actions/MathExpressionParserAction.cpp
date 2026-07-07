@@ -193,7 +193,15 @@ struct ActionData : public IData
 {
    std::list<MathExpressionData> mathExpressionDataList;
    std::string pendingMathExpression;
-   std::atomic_size_t pendingProcessingCount{ 0 };
+   asio::any_io_executor executor;
+   std::atomic_size_t pendingProcessingCount{ 1 };
+   FinalizingActionDataList::iterator finalizingActionDataIt;
+
+   ActionData(const asio::any_io_executor& i_executor, FinalizingActionDataList::iterator i_finalizingActionDataIt)
+      : executor(i_executor)
+      , finalizingActionDataIt(i_finalizingActionDataIt)
+   {
+   }
 };
 
 struct MathExpressionData
@@ -235,20 +243,23 @@ ActionResultTypeFwd MathExpressionParserAction::ProcessRawData(ISession& i_sessi
    auto& sessionData = m_sessionDataMap[&i_session];
    if (sessionData.data == nullptr)
    {
-      sessionData.data = std::make_unique<ActionData>();
+      sessionData.data = std::make_unique<ActionData>(i_session.GetExecuter(), m_finalizingActionDataList.end());
       sessionData.pendingProcessing++;
    }
 
    auto& actionData = static_cast<ActionData&>(*sessionData.data);
-   size_t lastCharIndex = i_size - 1;
-   while (lastCharIndex > 0 && IsWhitespace(i_data[lastCharIndex]))
-   {
-      lastCharIndex--;
-   }
    actionData.pendingMathExpression.append(i_data, i_size);
-   if (i_data[i_size - 1] == '\n')
+   const auto appendedRangeEnd = actionData.pendingMathExpression.rbegin() + i_size;
+   if (std::find_if(actionData.pendingMathExpression.rbegin(), appendedRangeEnd, [](char c) { return c == '\n'; }) != appendedRangeEnd)
    {
+      m_finalizingActionDataList.emplace_front(std::move(sessionData.data));
+      actionData.finalizingActionDataIt = m_finalizingActionDataList.begin();
       PostExpressionToPool(i_session, actionData, actionData.pendingMathExpression, actionData.pendingMathExpression.begin(), actionData.pendingMathExpression.end());
+      if (actionData.pendingProcessingCount.fetch_sub(1, std::memory_order_seq_cst) == 1)
+      {
+         utils::async(m_workerThreadPool, &MathExpressionParserAction::FinalizeParseMathExpression, this, i_session, actionData);
+      }
+      return utils::Ok();
    }
    if (actionData.pendingMathExpression.size() >= _max_size)
    {
@@ -256,7 +267,7 @@ ActionResultTypeFwd MathExpressionParserAction::ProcessRawData(ISession& i_sessi
          [](char c)
          {
             OperatorType _operator;
-            return IsOperator(c, _operator) && GetOperatorPrecedence(_operator) <= static_cast<int>(PriorityType::Normal);
+            return IsOperator(c, _operator) && GetOperatorPrecedence(_operator) <= static_cast<int>(PriorityType::Normal) && _operator != OperatorType::CloseParenthesis;
          });
       if (foundLowOperatorIt != actionData.pendingMathExpression.rend())
       {
@@ -315,7 +326,7 @@ void MathExpressionParserAction::ParseMathExpression(ISession& i_session, MathEx
       }
       if (i_mathExpressionData->actionDataRef.pendingProcessingCount.fetch_sub(1, std::memory_order_seq_cst) == 1)
       {
-         FinalizeParseMathExpression(i_session, std::move(m_sessionDataMap[&i_session].data));
+         FinalizeParseMathExpression(i_session, i_mathExpressionData->actionDataRef);
       }
    });
    const std::string& mathExpression = i_mathExpressionData->mathExpression;
@@ -391,18 +402,17 @@ void MathExpressionParserAction::ParseMathExpression(ISession& i_session, MathEx
    }
 }
 
-void MathExpressionParserAction::FinalizeParseMathExpression(ISession& i_session, utils::unique_ref<IData> i_actionData)
+void MathExpressionParserAction::FinalizeParseMathExpression(ISession& i_session, ActionData& i_actionData)
 {
-   ActionData& actionData = static_cast<ActionData&>(*i_actionData);
    std::list<long long> numsStack;
    std::list<OperatorType> operatorsStack;
-   for (auto& mathExpressionData : actionData.mathExpressionDataList)
+   for (auto& mathExpressionData : i_actionData.mathExpressionDataList)
    {
       if (!mathExpressionData.isValid.load(std::memory_order_relaxed))
       {
-         asio::post(i_session.GetExecuter(), [this, &i_session]()
+         asio::post(i_actionData.executor, [this, &i_session, &i_actionData]()
          {
-            FinishAction(i_session, "Error: Invalid expression");
+            SubmitFinalizedActionData(i_session, i_actionData, "Error: Invalid expression");
          });
          return;
       }
@@ -411,15 +421,20 @@ void MathExpressionParserAction::FinalizeParseMathExpression(ISession& i_session
    }
 
    auto applyResult = ApplyOperators(numsStack, operatorsStack, 0);
-   asio::post(i_session.GetExecuter(), [this, &i_session, applyResult = std::move(applyResult)]() mutable
+   std::string result = applyResult.isErr() ? "Error: " + applyResult.unwrapErr().What() : std::to_string(applyResult.unwrap());
+   asio::post(i_actionData.executor, [this, &i_session, &i_actionData, result = std::move(result)]() mutable
    {
-      if (applyResult.isErr())
-      {
-         FinishAction(i_session, "Error: " + applyResult.unwrapErr().What());
-      }
-      else
-      {
-         FinishAction(i_session, std::to_string(applyResult.unwrap()));
-      }
+      SubmitFinalizedActionData(i_session, i_actionData, result);
    });
+}
+
+void MathExpressionParserAction::SubmitFinalizedActionData(ISession& i_session, ActionData& i_actionData, std::string i_result)
+{
+   if (i_actionData.finalizingActionDataIt == m_finalizingActionDataList.end())
+   {
+      return;
+   }
+
+   m_finalizingActionDataList.erase(i_actionData.finalizingActionDataIt);
+   FinishAction(i_session, i_result);
 }
